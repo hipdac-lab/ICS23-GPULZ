@@ -59,7 +59,7 @@ nsys profile --stats=true ./gpulz -i QCLOUDf48.bin.f32.errctrl.1e-3
 You will observe the time for each kernel, i.e., compressKernelI (compression kernel I), compressKernelIII (compression kernel III), cub::DeviceScanKernel (CUB prefix sum kernel), and decompressKernel (decompression kernel).
 
 ## Citing GPULZ
-**ICS '23: GPULZ** ([local copy](ICS23-GPULZ.pdf), [via ACM](), or [via arXiv](https://arxiv.org/abs/2304.07342v2))
+**ICS '23: GPULZ** ([local copy](ICS23-GPULZ.pdf), [via ACM](https://dl.acm.org/doi/10.1145/3577193.3593706), or [via arXiv](https://arxiv.org/abs/2304.07342v2))
 
 ```bibtex
 @inproceedings{gpulz2023zhang,
