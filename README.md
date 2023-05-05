@@ -18,6 +18,14 @@ Please use the following command to compile GPULZ. You will get the executable `
 make -j
 ```
 
+## Configuration
+Please modify the following code in ```gpulz.cu``` for different configurations.
+```
+#define BLOCK_SIZE 2048     // in unit of byte, the size of one data block
+#define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
+#define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
+```
+
 <!-- ## Download Data
 Please use ```get_sample_data.sh``` to download the sample data.
 
@@ -58,14 +66,14 @@ You will observe the time for each kernel, i.e., compressKernelI (compression ke
       title = {GPULZ: Optimizing LZSS Lossless Compression for Multi-byte Data on Modern GPUs},
      author = {Zhang, Boyuan and Tian, Jiannan and Di, Sheng and Yu, Xiaodong and Swany, Martin and Tao, Dingwen and Cappello, Franck},
        year = {2023},
-       isbn = {},
+       isbn = {979-8-4007-0056-9/23/06},
   publisher = {Association for Computing Machinery},
     address = {New York, NY, USA},
-	url = {},
-        doi = {},
-  booktitle = {},
-   numpages = {},
-   keywords = {},
+	url = {https://dl.acm.org/doi/10.1145/3577193.3593706},
+        doi = {10.1145/3577193.3593706},
+  booktitle = {International Conference on Supercomputing},
+   numpages = {12},
+   keywords = {Lossless compression; LZSS; GPU; performance.},
    location = {Orlando, FL, USA},
      series = {ICS '23}
 }
