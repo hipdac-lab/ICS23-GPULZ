@@ -54,7 +54,7 @@ You will observe the time for each kernel, i.e., compressKernelI (compression ke
 **ICS '23: GPULZ** ([local copy](ICS23-GPULZ.pdf), [via ACM](), or [via arXiv](https://arxiv.org/abs/2304.07342v2))
 
 ```bibtex
-@inproceedings{fz2023zhang,
+@inproceedings{gpulz2023zhang,
       title = {GPULZ: Optimizing LZSS Lossless Compression for Multi-byte Data on Modern GPUs},
      author = {Zhang, Boyuan and Tian, Jiannan and Di, Sheng and Yu, Xiaodong and Swany, Martin and Tao, Dingwen and Cappello, Franck},
        year = {2023},
