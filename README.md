@@ -73,7 +73,7 @@ You will observe the time for each kernel, i.e., compressKernelI (compression ke
         doi = {10.1145/3577193.3593706},
   booktitle = {2023 International Conference on Supercomputing},
    numpages = {12},
-   keywords = {Lossless compression; LZSS; GPU; performance.},
+   keywords = {Lossless compression; LZSS; GPU; performance},
    location = {Orlando, FL, USA},
      series = {ICS '23}
 }
