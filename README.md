@@ -18,12 +18,12 @@ Please use the following command to compile GPULZ. You will get the executable `
 make -j
 ```
 
-## Download Data
+<!-- ## Download Data
 Please use ```get_sample_data.sh``` to download the sample data.
 
 ```
 ./get_sample_data.sh
-```
+``` -->
 
 ## Run GPULZ
 Please use the below command to run ```gpulz``` on a float32 data.
