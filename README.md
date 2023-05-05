@@ -71,7 +71,7 @@ You will observe the time for each kernel, i.e., compressKernelI (compression ke
     address = {New York, NY, USA},
 	url = {https://dl.acm.org/doi/10.1145/3577193.3593706},
         doi = {10.1145/3577193.3593706},
-  booktitle = {International Conference on Supercomputing},
+  booktitle = {2023 International Conference on Supercomputing},
    numpages = {12},
    keywords = {Lossless compression; LZSS; GPU; performance.},
    location = {Orlando, FL, USA},
