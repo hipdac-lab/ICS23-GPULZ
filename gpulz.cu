@@ -332,12 +332,11 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
 int main(int argc, char *argv[])
 {
   std::string inputFileName;
-  std::string outputFileName;
   int decomp = 0;
   int opt;
 
   /* parse command line */
-  while ((opt = getopt(argc, argv, "i:o:dh")) != -1)
+  while ((opt = getopt(argc, argv, "i:dh")) != -1)
   {
     switch (opt)
     {
@@ -345,25 +344,14 @@ int main(int argc, char *argv[])
       inputFileName = optarg;
       break;
 
-    case 'o': /* output file name */
-      outputFileName = optarg;
-      break;
-
     case 'd': /* decompression */
       decomp = 1;
       break;
 
     case 'h': /* help */
-      printf(" Usage for compression: ./main -i {inputfile} -o {outputfile}\n");
-      printf(" Usage for decompression: ./main -d 1 -i {inputfile} -o "
-             "{outputfile}\n");
+      printf(" Usage for compression and decompression: ./gpulz -i {inputfile}\n");
       return 0;
     }
-  }
-
-  if (decomp)
-  {
-    return 0;
   }
 
   INPUT_TYPE *hostArray = io::read_binary_to_new_array<INPUT_TYPE>(inputFileName);
@@ -566,22 +554,8 @@ int main(int argc, char *argv[])
   cudaEventElapsedTime(&decompTime, decompStart, decompStop);
   float compTp = float(fileSize) / 1024 / 1024 / compTime;
   float decompTp = float(fileSize) / 1024 / 1024 / decompTime;
-  std::cout << "compression throughput: " << compTp << " GB/s" << std::endl;
-  std::cout << "decompression throughput: " << decompTp << " GB/s" << std::endl;
-
-  uint8_t *outputToFile = (uint8_t *)malloc(compressedSize);
-  int sizeCount = 0;
-  memcpy(outputToFile + sizeCount, (uint8_t *)flagArrOffsetGlobalHost, sizeof(uint32_t) * (numOfBlocks + 1));
-  sizeCount += sizeof(uint32_t) * (numOfBlocks + 1);
-  memcpy(outputToFile + sizeCount, (uint8_t *)compressedDataOffsetGlobalHost, sizeof(uint32_t) * (numOfBlocks + 1));
-  sizeCount += sizeof(uint32_t) * (numOfBlocks + 1);
-  memcpy(outputToFile + sizeCount, (uint8_t *)flagArrGlobalHost, flagArrOffsetGlobalHost[numOfBlocks]);
-  sizeCount += flagArrOffsetGlobalHost[numOfBlocks];
-  memcpy(outputToFile + sizeCount, (uint8_t *)compressedDataGlobalHost, compressedDataOffsetGlobalHost[numOfBlocks]);
-  sizeCount += compressedDataOffsetGlobalHost[numOfBlocks];
-  io::write_array_to_binary<uint8_t>(inputFileName + ".gpulz", outputToFile, sizeCount);
-  free(outputToFile);
-  printf("compression time: %f\n", compTime);
+  std::cout << "compression e2e throughput: " << compTp << " GB/s" << std::endl;
+  std::cout << "decompression e2e throughput: " << decompTp << " GB/s" << std::endl;
 
   // free dynamic arrays
   free(flagArrOffsetGlobalHost);
