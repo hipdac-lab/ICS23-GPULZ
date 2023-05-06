@@ -23,7 +23,7 @@ Please modify the following code in ```gpulz.cu``` for different configurations.
 ```
 #define BLOCK_SIZE 2048     // in unit of byte, the size of one data block
 #define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
-#define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
+#define INPUT_TYPE uint32_t // define input type as c++ doesn't support runtime data type definition
 ```
 
 <!-- ## Download Data
