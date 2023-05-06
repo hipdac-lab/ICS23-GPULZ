@@ -26,12 +26,12 @@ Please modify the following code in ```gpulz.cu``` for different configurations.
 #define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
 ```
 
-<!-- ## Download Data
+## Download Data
 Please use ```get_sample_data.sh``` to download the sample data.
 
 ```
 ./get_sample_data.sh
-``` -->
+```
 
 ## Run GPULZ
 Please use the below command to run ```gpulz``` on a float32 data.
