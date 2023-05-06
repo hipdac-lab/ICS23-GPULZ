@@ -1,10 +1,10 @@
 # GPULZ: Optimizing LZSS Lossless Compression for Multi-byte Data on Modern GPUs
 
-Currently, GPULZ performs compression and decompression together, but we plan to provide options for performing compression and decompression separately in the future.
+GPULZ is a highly efficient LZSS compression solution for multi-byte data on modern GPUs. It optimizes the pattern-matching approach for multi-byte symbols to reduce computational complexity and discover longer repeated patterns. This results in higher performance than state-of-the-art solutions. At present, GPULZ performs compression and decompression simultaneously; however, we plan to offer options for performing these tasks separately in future iterations.
 
 (C) 2023 by Indiana University and Argonne National Laboratory.
 
-- Developers: Boyuan Zhang
+- Developer: Boyuan Zhang
 - Contributors (alphabetic): Dingwen Tao, Franck Cappello, Jiannan Tian, Sheng Di, Xiaodong Yu
 
 ## Recommended Environment
@@ -23,7 +23,7 @@ Please modify the following code in ```gpulz.cu``` for different configurations.
 ```
 #define BLOCK_SIZE 2048     // in unit of byte, the size of one data block
 #define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
-#define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
+#define INPUT_TYPE uint32_t // define input type as c++ doesn't support runtime data type definition
 ```
 
 ## Download Data
@@ -80,4 +80,4 @@ You will observe the time for each kernel, i.e., compressKernelI (compression ke
 ```
 
 ## Acknowledgements
-This R&D is supported by the Exascale Computing Project (ECP), Project Number: 17-SC-20-SC, a collaborative effort of two DOE organizations – the Office of Science and the National Nuclear Security Administration, responsible for the planning and preparation of a capable exascale ecosystem. This repository is based upon work supported by the U.S. Department of Energy, Office of Science, under contract DE-AC02-06CH11357, and also supported by the National Science Foundation under Grants OAC-2003709/2303064, OAC-2104023/2247080, and OAC-2312673.
+This R&D is supported by the Exascale Computing Project (ECP), Project Number: 17-SC-20-SC, a collaborative effort of two DOE organizations – the Office of Science and the National Nuclear Security Administration, responsible for the planning and preparation of a capable exascale ecosystem. This repository is based upon work supported by the U.S. Department of Energy, Office of Science, under contract DE-AC02-06CH11357, and also supported by the National Science Foundation under Grants OAC2003709, OAC-2104023, OAC-2303064, OAC-2247080, and OAC2312673.
