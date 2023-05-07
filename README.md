@@ -27,7 +27,7 @@ Please modify the following code in ```gpulz.cu``` for different configurations.
 ```
 
 ## Download Data
-Please use ```get_sample_data.sh``` to download the sample data.
+Please use ```get_sample_data.sh``` to download the sample data. If you want to download more sample data, please remove the commented lines from the script.
 
 ```
 ./get_sample_data.sh
@@ -41,7 +41,7 @@ Please use the below command to run ```gpulz``` on a float32 data.
 
 For example,
 ```
-./gpulz -i ./02_HURR_zyx_100x500x500=25000000/QCLOUDf48.bin.f32.errctrl.1e-3
+./gpulz -i tpch/tpch@0.2-00.bin
 ```
 
 Finally, you can observe the output including compression ratio and compression/decompression end-to-end throughputs.
