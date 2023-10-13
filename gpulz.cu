@@ -9,52 +9,56 @@
 #include <cmath>
 #include <cub/cub.cuh>
 
-#define BLOCK_SIZE 2048    // in unit of byte, the size of one data block
-#define THREAD_SIZE 128     // in unit of datatype, the size of the thread block, so as the size of symbols per iteration
-#define WINDOW_SIZE 32     // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
+#define BLOCK_SIZE 2048     // in unit of vector, the size of one data block
+#define THREAD_SIZE 128     // in unit of vector, the size of the thread block
+#define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
 #define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
+#define VECTOR_SIZE 16      // in unit of datatype (uint32_t), the size of the vector
 // #define DEBUG
+
+// each thread block handles VECTOR_SIZE * THREAD_SIZE = 2048 data points
+
+__device__ bool vectorComparison(uint32_t *input, uint32_t vectorSize, uint32_t bufferPosition, uint32_t windowPosition)
+{
+  for (int tmpIdx = 0; tmpIdx < vectorSize; tmpIdx++)
+  {
+    if (input[bufferPosition + tmpIdx] != window[windowPosition + tmpIdx])
+    {
+      return false;
+    }
+  }
+  return true;
+}
 
 // Define the compress match kernel functions
 template <typename T>
 __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagArrSizeGlobal, uint32_t *compressedDataSizeGlobal, uint8_t *tmpFlagArrGlobal, uint8_t *tmpCompressedDataGlobal, int minEncodeLength)
 {
   // Block size in uint of datatype
-  const uint32_t blockSize = BLOCK_SIZE / sizeof(T);
+  const uint32_t blockSize = BLOCK_SIZE;
 
   // Window size in uint of datatype
   const uint32_t threadSize = THREAD_SIZE;
 
-  // Allocate shared memory for the lookahead buffer of the whole block, the
-  // sliding window is included
-  __shared__ T buffer[blockSize];
+  const uint32_t vectorSize = VECTOR_SIZE;
+
+  // Allocate shared memory for the lookahead buffer information
   __shared__ uint8_t lengthBuffer[blockSize];
   __shared__ uint8_t offsetBuffer[blockSize];
+  __shared__ uint8_t byteFlagArr[(blockSize / 8)];
   __shared__ uint32_t prefixBuffer[blockSize + 1];
 
-  // initialize the tid
-  int tid = 0;
-
-  // Copy the memeory from global to shared
-  for (int i = 0; i < blockSize / threadSize; i++)
-  {
-    buffer[threadIdx.x + threadSize * i] =
-        input[blockIdx.x * blockSize + threadIdx.x + threadSize * i];
-  }
-
-  // Synchronize all threads to ensure that the buffer is fully loaded
-  __syncthreads();
+  // initialize the start position
+  int startPosision = blockIdx.x * blockSize * vectorSize;
 
   // find match for every data point
-  for (int iteration = 0; iteration < (int)(blockSize / threadSize);
-       iteration++)
+  for (int iteration = 0; iteration < (int)(blockSize / threadSize); iteration++)
   {
     // Initialize the lookahead buffer and the sliding window pointers
-    tid = threadIdx.x + iteration * threadSize;
-    int bufferStart = tid;
+    int vectorIdx = threadIdx.x + iteration * threadSize;
+    int bufferStart = vectorIdx;
     int bufferPointer = bufferStart;
-    int windowStart =
-        bufferStart - int(WINDOW_SIZE) < 0 ? 0 : bufferStart - WINDOW_SIZE;
+    int windowStart = bufferStart - int(WINDOW_SIZE) < 0 ? 0 : bufferStart - WINDOW_SIZE;
     int windowPointer = windowStart;
 
     uint8_t maxLen = 0;
@@ -64,7 +68,7 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
 
     while (windowPointer < bufferStart && bufferPointer < blockSize)
     {
-      if (buffer[bufferPointer] == buffer[windowPointer])
+      if (vectorComparison(input, vectorSize, startPosision + bufferPointer * vectorSize, startPosision + windowPointer * vectorSize))
       {
         if (offset == 0)
         {
@@ -102,7 +106,6 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
 
   // find encode information
   uint32_t flagCount = 0;
-  __shared__ uint8_t byteFlagArr[(blockSize / 8)];
 
   if (threadIdx.x == 0)
   {
@@ -152,11 +155,11 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     for (int iteration = 0; iteration < (int)(blockSize / threadSize);
          iteration++)
     {
-      tid = threadIdx.x + iteration * threadSize;
-      if (tid < d)
+      vectorIdx = threadIdx.x + iteration * threadSize;
+      if (vectorIdx < d)
       {
-        int ai = prefixSumOffset * (2 * tid + 1) - 1;
-        int bi = prefixSumOffset * (2 * tid + 2) - 1;
+        int ai = prefixSumOffset * (2 * vectorIdx + 1) - 1;
+        int bi = prefixSumOffset * (2 * vectorIdx + 2) - 1;
         prefixBuffer[bi] += prefixBuffer[ai];
       }
       __syncthreads();
@@ -182,12 +185,12 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     for (int iteration = 0; iteration < (int)(blockSize / threadSize);
          iteration++)
     {
-      tid = threadIdx.x + iteration * threadSize;
+      vectorIdx = threadIdx.x + iteration * threadSize;
 
-      if (tid < d)
+      if (vectorIdx < d)
       {
-        int ai = prefixSumOffset * (2 * tid + 1) - 1;
-        int bi = prefixSumOffset * (2 * tid + 2) - 1;
+        int ai = prefixSumOffset * (2 * vectorIdx + 1) - 1;
+        int bi = prefixSumOffset * (2 * vectorIdx + 2) - 1;
 
         uint32_t t = prefixBuffer[ai];
         prefixBuffer[ai] = prefixBuffer[bi];
@@ -198,17 +201,17 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
   }
 
   // encoding phase one
-  int tmpCompressedDataGlobalOffset;
-  tmpCompressedDataGlobalOffset = blockSize * blockIdx.x * sizeof(T);
+  int tmpCompressedDataGlobalOffset = blockSize * blockIdx.x * vectorSize * sizeof(INPUT_TYPE);
+
   for (int iteration = 0; iteration < (int)(blockSize / threadSize); iteration++)
   {
-    tid = threadIdx.x + iteration * threadSize;
-    if (prefixBuffer[tid + 1] != prefixBuffer[tid])
+    int vectorIdx = threadIdx.x + iteration * threadSize;
+    if (prefixBuffer[vectorIdx + 1] != prefixBuffer[vectorIdx])
     {
-      if (lengthBuffer[tid] < minEncodeLength)
+      if (lengthBuffer[vectorIdx] < minEncodeLength)
       {
-        uint32_t tmpOffset = prefixBuffer[tid];
-        uint8_t *bytePtr = (uint8_t *)&buffer[tid];
+        uint32_t tmpOffset = prefixBuffer[vectorIdx];
+        uint8_t *bytePtr = (uint8_t *)&buffer[vectorIdx];
         for (int tmpIndex = 0; tmpIndex < sizeof(T); tmpIndex++)
         {
           tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset + tmpIndex] = *(bytePtr + tmpIndex);
@@ -216,9 +219,9 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
       }
       else
       {
-        uint32_t tmpOffset = prefixBuffer[tid];
-        tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset] = lengthBuffer[tid];
-        tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset + 1] = offsetBuffer[tid];
+        uint32_t tmpOffset = prefixBuffer[vectorIdx];
+        tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset] = lengthBuffer[vectorIdx];
+        tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset + 1] = offsetBuffer[vectorIdx];
       }
     }
   }
@@ -238,7 +241,7 @@ template <typename T>
 __global__ void compressKernelIII(uint32_t numOfBlocks, uint32_t *flagArrOffsetGlobal, uint32_t *compressedDataOffsetGlobal, uint8_t *tmpFlagArrGlobal, uint8_t *tmpCompressedDataGlobal, uint8_t *flagArrGlobal, uint8_t *compressedDataGlobal)
 {
   // Block size in uint of bytes
-  const int blockSize = BLOCK_SIZE / sizeof(T);
+  const int blockSize = BLOCK_SIZE;
 
   // Window size in uint of bytes
   const int threadSize = THREAD_SIZE;
@@ -252,20 +255,20 @@ __global__ void compressKernelIII(uint32_t numOfBlocks, uint32_t *flagArrOffsetG
   int compressedDataOffset = compressedDataOffsetGlobal[blockIndex];
   int compressedDataSize = compressedDataOffsetGlobal[blockIndex + 1] - compressedDataOffsetGlobal[blockIndex];
 
-  int tid = threadIdx.x;
+  int vectorIdx = threadIdx.x;
 
-  while (tid < flagArrSize)
+  while (vectorIdx < flagArrSize)
   {
-    flagArrGlobal[flagArrOffset + tid] = tmpFlagArrGlobal[blockSize / 8 * blockIndex + tid];
-    tid += threadSize;
+    flagArrGlobal[flagArrOffset + vectorIdx] = tmpFlagArrGlobal[blockSize / 8 * blockIndex + vectorIdx];
+    vectorIdx += threadSize;
   }
 
-  tid = threadIdx.x;
+  vectorIdx = threadIdx.x;
 
-  while (tid < compressedDataSize)
+  while (vectorIdx < compressedDataSize)
   {
-    compressedDataGlobal[compressedDataOffset + tid] = tmpCompressedDataGlobal[blockSize * sizeof(T) * blockIndex + tid];
-    tid += threadSize;
+    compressedDataGlobal[compressedDataOffset + vectorIdx] = tmpCompressedDataGlobal[blockSize * sizeof(T) * blockIndex + vectorIdx];
+    vectorIdx += threadSize;
   }
 }
 
@@ -276,14 +279,14 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
   // Block size in unit of datatype
   const uint32_t blockSize = BLOCK_SIZE / sizeof(T);
 
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int vectorIdx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  if (tid < numOfBlocks)
+  if (vectorIdx < numOfBlocks)
   {
-    int flagArrOffset = flagArrOffsetGlobal[tid];
-    int flagArrSize = flagArrOffsetGlobal[tid + 1] - flagArrOffsetGlobal[tid];
+    int flagArrOffset = flagArrOffsetGlobal[vectorIdx];
+    int flagArrSize = flagArrOffsetGlobal[vectorIdx + 1] - flagArrOffsetGlobal[vectorIdx];
 
-    int compressedDataOffset = compressedDataOffsetGlobal[tid];
+    int compressedDataOffset = compressedDataOffsetGlobal[vectorIdx];
 
     uint32_t dataPointsIndex = 0;
     uint32_t compressedDataIndex = 0;
@@ -305,13 +308,13 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
           int dataPointsStart = dataPointsIndex;
           for (int tmpDecompIndex = 0; tmpDecompIndex < length; tmpDecompIndex++)
           {
-            output[tid * blockSize + dataPointsIndex] = output[tid * blockSize + dataPointsStart - offset + tmpDecompIndex];
+            output[vectorIdx * blockSize + dataPointsIndex] = output[vectorIdx * blockSize + dataPointsStart - offset + tmpDecompIndex];
             dataPointsIndex++;
           }
         }
         else
         {
-          uint8_t *tmpPtr = (uint8_t *)&output[tid * blockSize + dataPointsIndex];
+          uint8_t *tmpPtr = (uint8_t *)&output[vectorIdx * blockSize + dataPointsIndex];
           for (int tmpDecompIndex = 0; tmpDecompIndex < sizeof(T); tmpDecompIndex++)
           {
             *(tmpPtr + tmpDecompIndex) = compressedDataGlobal[compressedDataOffset + compressedDataIndex + tmpDecompIndex];
