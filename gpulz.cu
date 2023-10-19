@@ -22,7 +22,7 @@ __device__ bool vectorComparison(uint32_t *input, uint32_t vectorSize, uint32_t 
 {
     for (int tmpIdx = 0; tmpIdx < vectorSize; tmpIdx++)
     {
-        if (input[bufferPosition + tmpIdx] != window[windowPosition + tmpIdx])
+        if (input[bufferPosition + tmpIdx] != input[windowPosition + tmpIdx])
         {
             return false;
         }
@@ -51,12 +51,14 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     // initialize the start position, in unit of vector
     int startPosision = blockIdx.x * blockSize;
 
+    int vectorIdx = 0;
+
     // find match for every data point
     for (int iteration = 0; iteration < (int)(blockSize / threadSize); iteration++)
     {
         // Initialize the lookahead buffer and the sliding window pointers
         // initialize the vectorIdx, in unit of vector
-        int vectorIdx = threadIdx.x + iteration * threadSize;
+        vectorIdx = threadIdx.x + iteration * threadSize;
         int bufferStart = vectorIdx;
         int bufferPointer = bufferStart;
         int windowStart = bufferStart - int(WINDOW_SIZE) < 0 ? 0 : bufferStart - WINDOW_SIZE;
@@ -97,11 +99,11 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
             maxOffset = offset;
         }
 
-        lengthBuffer[threadIdx.x + iteration * threadSize] = maxLen;
-        offsetBuffer[threadIdx.x + iteration * threadSize] = maxOffset;
+        lengthBuffer[vectorIdx] = maxLen;
+        offsetBuffer[vectorIdx] = maxOffset;
 
         // initialize array as 0
-        prefixBuffer[threadIdx.x + iteration * threadSize] = 0;
+        prefixBuffer[vectorIdx] = 0;
     }
     __syncthreads();
 
@@ -120,7 +122,7 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
             // if length < minEncodeLength, no match is found
             if (lengthBuffer[encodeIndex] < minEncodeLength)
             {
-                prefixBuffer[encodeIndex] = sizeof(T);
+                prefixBuffer[encodeIndex] = vectorSize * sizeof(T);
                 encodeIndex++;
             }
             // if length > minEncodeLength, match is found
@@ -153,8 +155,7 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     int prefixSumOffset = 1;
     for (uint32_t d = blockSize >> 1; d > 0; d = d >> 1)
     {
-        for (int iteration = 0; iteration < (int)(blockSize / threadSize);
-             iteration++)
+        for (int iteration = 0; iteration < (int)(blockSize / threadSize); iteration++)
         {
             vectorIdx = threadIdx.x + iteration * threadSize;
             if (vectorIdx < d)
@@ -202,27 +203,28 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     }
 
     // encoding phase one
-    int tmpCompressedDataGlobalOffset = blockSize * blockIdx.x * vectorSize * sizeof(INPUT_TYPE);
+    int blockOffset = blockSize * blockIdx.x;
 
     for (int iteration = 0; iteration < (int)(blockSize / threadSize); iteration++)
     {
-        int vectorIdx = threadIdx.x + iteration * threadSize;
+        vectorIdx = threadIdx.x + iteration * threadSize;
         if (prefixBuffer[vectorIdx + 1] != prefixBuffer[vectorIdx])
         {
             if (lengthBuffer[vectorIdx] < minEncodeLength)
             {
                 uint32_t tmpOffset = prefixBuffer[vectorIdx];
-                uint8_t *bytePtr = (uint8_t *)&buffer[vectorIdx];
-                for (int tmpIndex = 0; tmpIndex < sizeof(T); tmpIndex++)
+                // uint8_t *bytePtr = (uint8_t *)&buffer[vectorIdx];
+                uint8_t *bytePtr = (uint8_t *)&input[(blockOffset + vectorIdx) * vectorSize];
+                for (int tmpIndex = 0; tmpIndex < vectorSize * sizeof(T); tmpIndex++)
                 {
-                    tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset + tmpIndex] = *(bytePtr + tmpIndex);
+                    tmpCompressedDataGlobal[blockOffset * vectorSize * sizeof(T) + tmpOffset + tmpIndex] = *(bytePtr + tmpIndex);
                 }
             }
             else
             {
                 uint32_t tmpOffset = prefixBuffer[vectorIdx];
-                tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset] = lengthBuffer[vectorIdx];
-                tmpCompressedDataGlobal[tmpCompressedDataGlobalOffset + tmpOffset + 1] = offsetBuffer[vectorIdx];
+                tmpCompressedDataGlobal[blockOffset * vectorSize * sizeof(T) + tmpOffset] = lengthBuffer[vectorIdx];
+                tmpCompressedDataGlobal[blockOffset * vectorSize * sizeof(T) + tmpOffset + 1] = offsetBuffer[vectorIdx];
             }
         }
     }
@@ -247,6 +249,8 @@ __global__ void compressKernelIII(uint32_t numOfBlocks, uint32_t *flagArrOffsetG
     // Window size in uint of bytes
     const int threadSize = THREAD_SIZE;
 
+    const uint32_t vectorSize = VECTOR_SIZE;
+
     // find block index
     int blockIndex = blockIdx.x;
 
@@ -256,20 +260,20 @@ __global__ void compressKernelIII(uint32_t numOfBlocks, uint32_t *flagArrOffsetG
     int compressedDataOffset = compressedDataOffsetGlobal[blockIndex];
     int compressedDataSize = compressedDataOffsetGlobal[blockIndex + 1] - compressedDataOffsetGlobal[blockIndex];
 
-    int vectorIdx = threadIdx.x;
+    int tid = threadIdx.x;
 
-    while (vectorIdx < flagArrSize)
+    while (tid < flagArrSize)
     {
-        flagArrGlobal[flagArrOffset + vectorIdx] = tmpFlagArrGlobal[blockSize / 8 * blockIndex + vectorIdx];
-        vectorIdx += threadSize;
+        flagArrGlobal[flagArrOffset + tid] = tmpFlagArrGlobal[blockSize / 8 * blockIndex + tid];
+        tid += threadSize;
     }
 
-    vectorIdx = threadIdx.x;
+    tid = threadIdx.x;
 
-    while (vectorIdx < compressedDataSize)
+    while (tid < compressedDataSize)
     {
-        compressedDataGlobal[compressedDataOffset + vectorIdx] = tmpCompressedDataGlobal[blockSize * sizeof(T) * blockIndex + vectorIdx];
-        vectorIdx += threadSize;
+        compressedDataGlobal[compressedDataOffset + tid] = tmpCompressedDataGlobal[blockSize * blockIndex * sizeof(T) * vectorSize + tid];
+        tid += threadSize;
     }
 }
 
@@ -278,18 +282,20 @@ template <typename T>
 __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flagArrOffsetGlobal, uint32_t *compressedDataOffsetGlobal, uint8_t *flagArrGlobal, uint8_t *compressedDataGlobal)
 {
     // Block size in unit of datatype
-    const uint32_t blockSize = BLOCK_SIZE / sizeof(T);
+    const uint32_t blockSize = BLOCK_SIZE;
 
-    int vectorIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t vectorSize = VECTOR_SIZE;
 
-    if (vectorIdx < numOfBlocks)
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (tid < numOfBlocks)
     {
-        int flagArrOffset = flagArrOffsetGlobal[vectorIdx];
-        int flagArrSize = flagArrOffsetGlobal[vectorIdx + 1] - flagArrOffsetGlobal[vectorIdx];
+        int flagArrOffset = flagArrOffsetGlobal[tid];
+        int flagArrSize = flagArrOffsetGlobal[tid + 1] - flagArrOffsetGlobal[tid];
 
-        int compressedDataOffset = compressedDataOffsetGlobal[vectorIdx];
+        int compressedDataOffset = compressedDataOffsetGlobal[tid];
 
-        uint32_t dataPointsIndex = 0;
+        uint32_t vectorIdx = 0;
         uint32_t compressedDataIndex = 0;
 
         uint8_t byteFlag;
@@ -306,25 +312,25 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
                     int length = compressedDataGlobal[compressedDataOffset + compressedDataIndex];
                     int offset = compressedDataGlobal[compressedDataOffset + compressedDataIndex + 1];
                     compressedDataIndex += 2;
-                    int dataPointsStart = dataPointsIndex;
+                    int vectorStart = vectorIdx;
                     for (int tmpDecompIndex = 0; tmpDecompIndex < length; tmpDecompIndex++)
                     {
-                        output[vectorIdx * blockSize + dataPointsIndex] = output[vectorIdx * blockSize + dataPointsStart - offset + tmpDecompIndex];
-                        dataPointsIndex++;
+                        output[(tid * blockSize + vectorIdx) * vectorSize] = output[tid * blockSize * vectorSize + vectorStart - offset + tmpDecompIndex];
+                        vectorIdx++;
                     }
                 }
                 else
                 {
-                    uint8_t *tmpPtr = (uint8_t *)&output[vectorIdx * blockSize + dataPointsIndex];
-                    for (int tmpDecompIndex = 0; tmpDecompIndex < sizeof(T); tmpDecompIndex++)
+                    uint8_t *tmpPtr = (uint8_t *)&output[(tid * blockSize + vectorIdx) * vectorSize];
+                    for (int tmpDecompIndex = 0; tmpDecompIndex < sizeof(T) * vectorSize; tmpDecompIndex++)
                     {
                         *(tmpPtr + tmpDecompIndex) = compressedDataGlobal[compressedDataOffset + compressedDataIndex + tmpDecompIndex];
                     }
 
-                    compressedDataIndex += sizeof(T);
-                    dataPointsIndex++;
+                    compressedDataIndex += sizeof(T) * vectorSize;
+                    vectorIdx++;
                 }
-                if (dataPointsIndex >= blockSize)
+                if (vectorIdx >= blockSize)
                 {
                     return;
                 }
@@ -385,15 +391,15 @@ int main(int argc, char *argv[])
     uint8_t *compressedDataGlobal;
 
     // calculate the padding size, unit in bytes
-    uint32_t paddingSize = fileSize % BLOCK_SIZE == 0 ? 0 : BLOCK_SIZE - fileSize % BLOCK_SIZE;
+    uint32_t minimumChunkSize = BLOCK_SIZE * VECTOR_SIZE * sizeof(INPUT_TYPE);
+    uint32_t paddingSize = fileSize % minimumChunkSize == 0 ? 0 : minimumChunkSize - fileSize % minimumChunkSize;
 
-    // calculate the datatype size, unit in datatype
-    uint32_t datatypeSize =
-        static_cast<uint32_t>((fileSize + paddingSize) / sizeof(INPUT_TYPE));
+    // calculate the datatype size, unit in vector
+    uint32_t inputVectorSize = static_cast<uint32_t>((fileSize + paddingSize) / sizeof(INPUT_TYPE) / VECTOR_SIZE);
 
-    uint32_t numOfBlocks = datatypeSize * sizeof(INPUT_TYPE) / BLOCK_SIZE;
+    uint32_t numOfBlocks = inputVectorSize / BLOCK_SIZE;
 
-    INPUT_TYPE *hostOutput = (INPUT_TYPE *)malloc(sizeof(INPUT_TYPE) * datatypeSize);
+    INPUT_TYPE *hostOutput = (INPUT_TYPE *)malloc(inputVectorSize * sizeof(INPUT_TYPE) * VECTOR_SIZE);
 
     // malloc the device buffer and set it as 0
     cudaMalloc((void **)&deviceArray, fileSize + paddingSize);
@@ -403,10 +409,10 @@ int main(int argc, char *argv[])
     cudaMalloc((void **)&flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMalloc((void **)&compressedDataSizeGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMalloc((void **)&compressedDataOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
-    cudaMalloc((void **)&tmpFlagArrGlobal, sizeof(uint8_t) * datatypeSize / 8);
-    cudaMalloc((void **)&tmpCompressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize);
-    cudaMalloc((void **)&flagArrGlobal, sizeof(uint8_t) * datatypeSize / 8);
-    cudaMalloc((void **)&compressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize);
+    cudaMalloc((void **)&tmpFlagArrGlobal, sizeof(uint8_t) * inputVectorSize / 8);
+    cudaMalloc((void **)&tmpCompressedDataGlobal, sizeof(INPUT_TYPE) * inputVectorSize * VECTOR_SIZE);
+    cudaMalloc((void **)&flagArrGlobal, sizeof(uint8_t) * inputVectorSize / 8);
+    cudaMalloc((void **)&compressedDataGlobal, sizeof(INPUT_TYPE) * inputVectorSize * VECTOR_SIZE);
 
     // initialize the mem as 0
     cudaMemset(deviceArray, 0, fileSize + paddingSize);
@@ -415,15 +421,15 @@ int main(int argc, char *argv[])
     cudaMemset(flagArrOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMemset(compressedDataSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMemset(compressedDataOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
-    cudaMemset(tmpFlagArrGlobal, 0, sizeof(uint8_t) * datatypeSize / 8);
-    cudaMemset(tmpCompressedDataGlobal, 0, sizeof(INPUT_TYPE) * datatypeSize);
+    cudaMemset(tmpFlagArrGlobal, 0, sizeof(uint8_t) * inputVectorSize / 8);
+    cudaMemset(tmpCompressedDataGlobal, 0, sizeof(INPUT_TYPE) * inputVectorSize * VECTOR_SIZE);
 
     // cudaDeviceSetCacheConfig(cudaFuncCachePreferShared);
 
     // copy host memory to device
     cudaMemcpy(deviceArray, hostArray, fileSize, cudaMemcpyHostToDevice);
 
-    // printf("num of blocks: %d\nfile size: %d\npadding size: %d\n data type length: %d\n", numOfBlocks, fileSize, paddingSize, datatypeSize);
+    // printf("num of blocks: %d\nfile size: %d\npadding size: %d\n data type length: %d\n", numOfBlocks, fileSize, paddingSize, inputVectorSize);
 
     dim3 gridDim(numOfBlocks);
     dim3 blockDim(THREAD_SIZE);
@@ -440,10 +446,10 @@ int main(int argc, char *argv[])
 
     flagArrOffsetGlobalHost = (uint32_t *)malloc(sizeof(uint32_t) * (numOfBlocks + 1));
     compressedDataOffsetGlobalHost = (uint32_t *)malloc(sizeof(uint32_t) * (numOfBlocks + 1));
-    tmpFlagArrGlobalHost = (uint8_t *)malloc(sizeof(uint8_t) * datatypeSize / 8);
-    tmpCompressedDataGlobalHost = (uint8_t *)malloc(sizeof(INPUT_TYPE) * datatypeSize);
-    flagArrGlobalHost = (uint8_t *)malloc(sizeof(uint8_t) * datatypeSize / 8);
-    compressedDataGlobalHost = (uint8_t *)malloc(sizeof(INPUT_TYPE) * datatypeSize);
+    tmpFlagArrGlobalHost = (uint8_t *)malloc(sizeof(uint8_t) * inputVectorSize / 8);
+    tmpCompressedDataGlobalHost = (uint8_t *)malloc(sizeof(INPUT_TYPE) * inputVectorSize * VECTOR_SIZE);
+    flagArrGlobalHost = (uint8_t *)malloc(sizeof(uint8_t) * inputVectorSize / 8);
+    compressedDataGlobalHost = (uint8_t *)malloc(sizeof(INPUT_TYPE) * inputVectorSize * VECTOR_SIZE);
 
     cudaEvent_t compStart, compStop, decompStart, decompStop;
     cudaEventCreate(&compStart);
@@ -453,7 +459,7 @@ int main(int argc, char *argv[])
 
     cudaEventRecord(compStart);
 
-    int minEncodeLength = sizeof(INPUT_TYPE) == 1 ? 2 : 1;
+    int minEncodeLength = 1;
 
     // launch kernels
     compressKernelI<INPUT_TYPE><<<gridDim, blockDim>>>(deviceArray, numOfBlocks, flagArrSizeGlobal, compressedDataSizeGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, minEncodeLength);
@@ -483,6 +489,7 @@ int main(int argc, char *argv[])
     compressKernelIII<INPUT_TYPE><<<gridDim, blockDim>>>(numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, flagArrGlobal, compressedDataGlobal);
 
     cudaEventRecord(compStop);
+
     cudaEventRecord(decompStart);
 
     decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal);
@@ -491,10 +498,10 @@ int main(int argc, char *argv[])
     // copy the memory back to global
     cudaMemcpy(flagArrOffsetGlobalHost, flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost);
     cudaMemcpy(compressedDataOffsetGlobalHost, compressedDataOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost);
-    cudaMemcpy(tmpFlagArrGlobalHost, tmpFlagArrGlobal, sizeof(uint8_t) * datatypeSize / 8, cudaMemcpyDeviceToHost);
-    cudaMemcpy(tmpCompressedDataGlobalHost, tmpCompressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize, cudaMemcpyDeviceToHost);
-    cudaMemcpy(flagArrGlobalHost, flagArrGlobal, sizeof(uint8_t) * datatypeSize / 8, cudaMemcpyDeviceToHost);
-    cudaMemcpy(compressedDataGlobalHost, compressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize, cudaMemcpyDeviceToHost);
+    cudaMemcpy(tmpFlagArrGlobalHost, tmpFlagArrGlobal, sizeof(uint8_t) * inputVectorSize / 8, cudaMemcpyDeviceToHost);
+    cudaMemcpy(tmpCompressedDataGlobalHost, tmpCompressedDataGlobal, sizeof(INPUT_TYPE) * inputVectorSize, cudaMemcpyDeviceToHost);
+    cudaMemcpy(flagArrGlobalHost, flagArrGlobal, sizeof(uint8_t) * inputVectorSize / 8, cudaMemcpyDeviceToHost);
+    cudaMemcpy(compressedDataGlobalHost, compressedDataGlobal, sizeof(INPUT_TYPE) * inputVectorSize, cudaMemcpyDeviceToHost);
 
     cudaMemcpy(hostOutput, deviceOutput, fileSize, cudaMemcpyDeviceToHost);
 
