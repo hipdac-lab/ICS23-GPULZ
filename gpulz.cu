@@ -9,9 +9,9 @@
 #include <cmath>
 #include <cub/cub.cuh>
 
-#define BLOCK_SIZE 2048    // in unit of byte, the size of one data block
+#define BLOCK_SIZE 2048     // in unit of byte, the size of one data block
 #define THREAD_SIZE 128     // in unit of datatype, the size of the thread block, so as the size of symbols per iteration
-#define WINDOW_SIZE 32     // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
+#define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
 #define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
 // #define DEBUG
 
@@ -28,9 +28,6 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
   // Allocate shared memory for the lookahead buffer of the whole block, the
   // sliding window is included
   __shared__ T buffer[blockSize];
-  __shared__ uint8_t lengthBuffer[blockSize];
-  __shared__ uint8_t offsetBuffer[blockSize];
-  __shared__ uint32_t prefixBuffer[blockSize + 1];
 
   // initialize the tid
   int tid = 0;
@@ -41,6 +38,37 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     buffer[threadIdx.x + threadSize * i] =
         input[blockIdx.x * blockSize + threadIdx.x + threadSize * i];
   }
+
+  // tell if all the data in this data chunk are zero
+  __shared__ int notEmptyFlag;
+
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+  {
+    notEmptyFlag = 0;
+  }
+
+  __syncthreads();
+
+  for (int iterationIdx = 0; iterationIdx < (int)(blockSize / threadSize); iterationIdx++)
+  {
+    if (__any_sync(0xFFFFFFFF, buffer[threadIdx.x + iterationIdx * threadSize]))
+    {
+      if (threadIdx.x % 32 == 0)
+      {
+        notEmptyFlag = 1;
+      }
+    }
+  }
+  __syncthreads();
+
+  if (notEmptyFlag == 0)
+  {
+    return;
+  }
+
+  __shared__ uint8_t lengthBuffer[blockSize];
+  __shared__ uint8_t offsetBuffer[blockSize];
+  __shared__ uint32_t prefixBuffer[blockSize + 1];
 
   // Synchronize all threads to ensure that the buffer is fully loaded
   __syncthreads();
