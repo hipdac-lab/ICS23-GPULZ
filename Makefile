@@ -1,5 +1,5 @@
 main: gpulz.cu
-	nvcc gpulz.cu -arch sm_80 -o gpulz
+	nvcc -Xcompiler -fPIC -shared -o gpulz.so gpulz.cu
 
 clean:
-	rm -rf gpulz
+	rm -rf gpulz.so
