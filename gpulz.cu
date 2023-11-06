@@ -315,7 +315,10 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
                     int vectorStart = vectorIdx;
                     for (int tmpDecompIndex = 0; tmpDecompIndex < length; tmpDecompIndex++)
                     {
-                        output[(tid * blockSize + vectorIdx) * vectorSize] = output[tid * blockSize * vectorSize + vectorStart - offset + tmpDecompIndex];
+                        for (int tmpSecondLevelIdx = 0; tmpSecondLevelIdx < vectorSize; tmpSecondLevelIdx++)
+                        {
+                            output[(tid * blockSize + vectorIdx) * vectorSize + tmpSecondLevelIdx] = output[(tid * blockSize + vectorStart - offset + tmpDecompIndex) * vectorSize + tmpSecondLevelIdx];
+                        }
                         vectorIdx++;
                     }
                 }
