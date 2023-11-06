@@ -18,7 +18,7 @@
 
 // each thread block handles VECTOR_SIZE * THREAD_SIZE = 2048 data points
 
-__device__ bool vectorComparison(uint32_t *input, uint32_t vectorSize, uint32_t bufferPosition, uint32_t windowPosition)
+__device__ bool vectorComparison(INPUT_TYPE *input, uint32_t vectorSize, uint32_t bufferPosition, uint32_t windowPosition)
 {
     for (int tmpIdx = 0; tmpIdx < vectorSize; tmpIdx++)
     {
