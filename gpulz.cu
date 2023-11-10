@@ -694,7 +694,7 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
     cudaFree(flagArrGlobal);
     cudaFree(compressedDataGlobal);
 
-    free(inputPtr);
+    cudaFree(inputPtr);
 
     return 0;
 }
