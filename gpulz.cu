@@ -357,9 +357,11 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
     }
 }
 
-int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedFileName)
+int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedFileName, void *streamPtr)
 {
     // INPUT_TYPE *deviceOutput;
+
+    cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
 
     uint32_t *flagArrSizeGlobal;
     uint32_t *flagArrOffsetGlobal;
@@ -375,10 +377,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
 
     // calculate the datatype size, unit in datatype
     uint32_t datatypeSize = static_cast<uint32_t>((fileSize + paddingSize) / sizeof(INPUT_TYPE));
-
     uint32_t numOfBlocks = datatypeSize * sizeof(INPUT_TYPE) / BLOCK_SIZE;
-
-    INPUT_TYPE *hostOutput = (INPUT_TYPE *)malloc(sizeof(INPUT_TYPE) * datatypeSize);
 
     // malloc the device buffer and set it as 0
     // cudaMalloc((void **)&deviceOutput, fileSize + paddingSize);
@@ -393,14 +392,14 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaMalloc((void **)&compressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize);
 
     // initialize the mem as 0
-    // cudaMemset(deviceArray, 0, fileSize + paddingSize);
-    // cudaMemset(deviceOutput, 0, fileSize + paddingSize);
-    cudaMemset(flagArrSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
-    cudaMemset(flagArrOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
-    cudaMemset(compressedDataSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
-    cudaMemset(compressedDataOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1));
-    cudaMemset(tmpFlagArrGlobal, 0, sizeof(uint8_t) * datatypeSize / 8);
-    cudaMemset(tmpCompressedDataGlobal, 0, sizeof(INPUT_TYPE) * datatypeSize);
+    // cudaMemsetAsync(deviceArray, 0, fileSize + paddingSize);
+    // cudaMemsetAsync(deviceOutput, 0, fileSize + paddingSize);
+    cudaMemsetAsync(flagArrSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
+    cudaMemsetAsync(flagArrOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
+    cudaMemsetAsync(compressedDataSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
+    cudaMemsetAsync(compressedDataOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
+    cudaMemsetAsync(tmpFlagArrGlobal, 0, sizeof(uint8_t) * datatypeSize / 8, stream);
+    cudaMemsetAsync(tmpCompressedDataGlobal, 0, sizeof(INPUT_TYPE) * datatypeSize, stream);
 
     dim3 gridDim(numOfBlocks);
     dim3 blockDim(THREAD_SIZE);
@@ -409,38 +408,38 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaEventCreate(&compStart);
     cudaEventCreate(&compStop);
 
-    cudaEventRecord(compStart);
+    cudaEventRecord(compStart, stream);
 
     int minEncodeLength = sizeof(INPUT_TYPE) == 1 ? 2 : 1;
 
     // launch kernels
-    compressKernelI<INPUT_TYPE><<<gridDim, blockDim>>>(deviceArray, numOfBlocks, flagArrSizeGlobal, compressedDataSizeGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, minEncodeLength);
+    compressKernelI<INPUT_TYPE><<<gridDim, blockDim, 0, stream>>>(deviceArray, numOfBlocks, flagArrSizeGlobal, compressedDataSizeGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, minEncodeLength);
 
     // Determine temporary device storage requirements
     void *flag_d_temp_storage = NULL;
     size_t flag_temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(flag_d_temp_storage, flag_temp_storage_bytes, flagArrSizeGlobal, flagArrOffsetGlobal, numOfBlocks + 1);
+    cub::DeviceScan::ExclusiveSum(flag_d_temp_storage, flag_temp_storage_bytes, flagArrSizeGlobal, flagArrOffsetGlobal, numOfBlocks + 1, stream = stream);
 
     // Allocate temporary storage
     cudaMalloc(&flag_d_temp_storage, flag_temp_storage_bytes);
 
     // Run exclusive prefix sum
-    cub::DeviceScan::ExclusiveSum(flag_d_temp_storage, flag_temp_storage_bytes, flagArrSizeGlobal, flagArrOffsetGlobal, numOfBlocks + 1);
+    cub::DeviceScan::ExclusiveSum(flag_d_temp_storage, flag_temp_storage_bytes, flagArrSizeGlobal, flagArrOffsetGlobal, numOfBlocks + 1, stream = stream);
 
     // Determine temporary device storage requirements
     void *data_d_temp_storage = NULL;
     size_t data_temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(data_d_temp_storage, data_temp_storage_bytes, compressedDataSizeGlobal, compressedDataOffsetGlobal, numOfBlocks + 1);
+    cub::DeviceScan::ExclusiveSum(data_d_temp_storage, data_temp_storage_bytes, compressedDataSizeGlobal, compressedDataOffsetGlobal, numOfBlocks + 1, stream = stream);
 
     // Allocate temporary storage
     cudaMalloc(&data_d_temp_storage, data_temp_storage_bytes);
 
     // Run exclusive prefix sum
-    cub::DeviceScan::ExclusiveSum(data_d_temp_storage, data_temp_storage_bytes, compressedDataSizeGlobal, compressedDataOffsetGlobal, numOfBlocks + 1);
+    cub::DeviceScan::ExclusiveSum(data_d_temp_storage, data_temp_storage_bytes, compressedDataSizeGlobal, compressedDataOffsetGlobal, numOfBlocks + 1, stream = stream);
 
-    compressKernelIII<INPUT_TYPE><<<gridDim, blockDim>>>(numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, flagArrGlobal, compressedDataGlobal);
+    compressKernelIII<INPUT_TYPE><<<gridDim, blockDim, 0, stream>>>(numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, flagArrGlobal, compressedDataGlobal);
 
-    cudaEventRecord(compStop);
+    cudaEventRecord(compStop, stream);
     // cudaEventRecord(decompStart);
 
     // decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal);
@@ -487,11 +486,15 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     uint32_t *flagArrSize;
     uint32_t *compressedDateSize;
 
-    flagArrSize = (uint32_t *)malloc(sizeof(uint32_t));
-    compressedDateSize = (uint32_t *)malloc(sizeof(uint32_t));
+    // flagArrSize = (uint32_t *)malloc(sizeof(uint32_t));
+    cudaMallocHost(&flagArrSize, sizeof(uint32_t));
+    // compressedDateSize = (uint32_t *)malloc(sizeof(uint32_t));
+    cudaMallocHost(&compressedDateSize, sizeof(uint32_t));
 
-    cudaMemcpy(flagArrSize, flagArrOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-    cudaMemcpy(compressedDateSize, compressedDataOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(flagArrSize, flagArrOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(compressedDateSize, compressedDataOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+
+    cudaStreamSynchronize(stream);
 
     uint32_t originalSize = fileSize;
     uint32_t compressedSize = sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t);
@@ -501,7 +504,9 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     std::cout << "compression ratio: " << compressionRatio << std::endl;
 
     uint8_t *outputPtr;
-    outputPtr = (uint8_t *)malloc(sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t));
+    // outputPtr = (uint8_t *)malloc(sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t));
+    cudaMallocHost(&outputPtr, sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t));
+
     uint32_t outputPtrOffset = 0;
     *(uint32_t *)(outputPtr + outputPtrOffset) = fileSize;
     // std::cout << fileSize<< std::endl;
@@ -520,17 +525,19 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     // std::cout << *(uint32_t *)(outputPtr + outputPtrOffset) << std::endl;
     outputPtrOffset += sizeof(uint32_t);
 
-    cudaMemcpy(outputPtr + outputPtrOffset, flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(outputPtr + outputPtrOffset, flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost, stream);
     outputPtrOffset += sizeof(uint32_t) * (numOfBlocks + 1);
-    cudaMemcpy(outputPtr + outputPtrOffset, compressedDataOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(outputPtr + outputPtrOffset, compressedDataOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost, stream);
     outputPtrOffset += sizeof(uint32_t) * (numOfBlocks + 1);
-    cudaMemcpy(outputPtr + outputPtrOffset, flagArrGlobal, *flagArrSize, cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(outputPtr + outputPtrOffset, flagArrGlobal, *flagArrSize, cudaMemcpyDeviceToHost, stream);
     outputPtrOffset += *flagArrSize;
-    cudaMemcpy(outputPtr + outputPtrOffset, compressedDataGlobal, *compressedDateSize, cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(outputPtr + outputPtrOffset, compressedDataGlobal, *compressedDateSize, cudaMemcpyDeviceToHost, stream);
     outputPtrOffset += *compressedDateSize;
 
     // std::cout << "the allocated size is: " << sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 3 * sizeof(uint32_t) << std::endl;
     // std::cout << "the actual size is: " << outputPtrOffset << std::endl;
+
+    cudaStreamSynchronize(stream);
 
     io::write_array_to_binary<uint8_t>(compressedFileName, outputPtr, outputPtrOffset);
 
@@ -557,18 +564,21 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaFree(flag_d_temp_storage);
     cudaFree(data_d_temp_storage);
 
-    free(flagArrSize);
-    free(compressedDateSize);
-    free(outputPtr);
+    cudaFree(flagArrSize);
+    cudaFree(compressedDateSize);
+    cudaFree(outputPtr);
 
     return 0;
 }
 
-int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName)
+int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *streamPtr)
 {
+    cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
+
     size_t compressedFileSize = io::FileSize(compressedFileName);
     uint8_t *inputPtr;
-    inputPtr = (uint8_t *)malloc(compressedFileSize);
+    // inputPtr = (uint8_t *)malloc(compressedFileSize);
+    cudaMallocHost(&inputPtr, compressedFileSize);
     io::read_binary_to_array<uint8_t>(compressedFileName, inputPtr, compressedFileSize);
 
     uint32_t numOfBlocks = 0;
@@ -596,13 +606,13 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName)
     cudaMalloc((void **)&flagArrGlobal, sizeof(uint8_t) * flagArrSize);
     cudaMalloc((void **)&compressedDataGlobal, sizeof(INPUT_TYPE) * compressedDateSize);
 
-    cudaMemcpy(flagArrOffsetGlobal, inputPtr + inputPtrOffset, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(flagArrOffsetGlobal, inputPtr + inputPtrOffset, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyHostToDevice, stream);
     inputPtrOffset += sizeof(uint32_t) * (numOfBlocks + 1);
-    cudaMemcpy(compressedDataOffsetGlobal, inputPtr + inputPtrOffset, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(compressedDataOffsetGlobal, inputPtr + inputPtrOffset, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyHostToDevice, stream);
     inputPtrOffset += sizeof(uint32_t) * (numOfBlocks + 1);
-    cudaMemcpy(flagArrGlobal, inputPtr + inputPtrOffset, sizeof(uint8_t) * flagArrSize, cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(flagArrGlobal, inputPtr + inputPtrOffset, sizeof(uint8_t) * flagArrSize, cudaMemcpyHostToDevice, stream);
     inputPtrOffset += flagArrSize;
-    cudaMemcpy(compressedDataGlobal, inputPtr + inputPtrOffset, sizeof(INPUT_TYPE) * compressedDateSize, cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(compressedDataGlobal, inputPtr + inputPtrOffset, sizeof(INPUT_TYPE) * compressedDateSize, cudaMemcpyHostToDevice, stream);
     inputPtrOffset += compressedDateSize;
 
     dim3 deGridDim(ceil(float(numOfBlocks) / 32));
@@ -612,9 +622,9 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName)
     cudaEventCreate(&decompStart);
     cudaEventCreate(&decompStop);
 
-    cudaEventRecord(decompStart);
-    decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal);
-    cudaEventRecord(decompStop);
+    cudaEventRecord(decompStart, stream);
+    decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim, 0, stream>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal);
+    cudaEventRecord(decompStop, stream);
 
 #ifdef DEBUG
     printf("print the first 1024 flag array offset elements:\n");
@@ -691,13 +701,13 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName)
 
 extern "C"
 {
-    void runCompression(INPUT_TYPE *deviceArray, uint32_t fileSize, char *compressedFileName)
+    void runCompression(INPUT_TYPE *deviceArray, uint32_t fileSize, char *compressedFileName, void *stream)
     {
-        compress(deviceArray, fileSize, compressedFileName);
+        compress(deviceArray, fileSize, compressedFileName, stream);
     }
 
-    void runDecompression(INPUT_TYPE *deviceOutput, char *compressedFileName)
+    void runDecompression(INPUT_TYPE *deviceOutput, char *compressedFileName, void *stream)
     {
-        decompress(deviceOutput, compressedFileName);
+        decompress(deviceOutput, compressedFileName, stream);
     }
 }
