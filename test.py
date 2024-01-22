@@ -84,7 +84,17 @@ if __name__ == '__main__':
     run_gpulz_decomp(y_quantization_decomped, stream, "./tmp.bin")
 
     are_equal = torch.equal(y_quantization, y_quantization_decomped)
-    print(f'original and reconstructed are equal: {are_equal}')
+    if are_equal:
+        print('original and reconstructed are equal')
+    else:
+        print('original and reconstructed are NOT equal!!!!!')
+    
+    # for i in range(len(y_quantization)):
+    #     if not torch.equal(y_quantization[i], y_quantization_decomped[i]):
+    #         print(i)
+    #         print(y_quantization[i])
+    #         print(y_quantization_decomped[i])
+    #         break
 
     y_quantization_decomped = y_quantization_decomped.to(torch.float32)
     x_hat = net.g_s(y_quantization_decomped).clamp_(0, 1)

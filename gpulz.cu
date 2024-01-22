@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <cmath>
 #include <cub/cub.cuh>
+#include <thrust/scan.h>
+#include <thrust/execution_policy.h>
 
 #define BLOCK_SIZE 2048     // in unit of byte, the size of one data block
 #define THREAD_SIZE 128     // in unit of datatype, the size of the thread block, so as the size of symbols per iteration
@@ -17,7 +19,7 @@
 
 // Define the compress match kernel functions
 template <typename T>
-__global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagArrSizeGlobal, uint32_t *compressedDataSizeGlobal, uint8_t *tmpFlagArrGlobal, uint8_t *tmpCompressedDataGlobal, int minEncodeLength)
+__global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagArrSizeGlobal, uint32_t *compressedDataSizeGlobal, uint8_t *tmpFlagArrGlobal, uint8_t *tmpCompressedDataGlobal, int minEncodeLength, uint8_t *notEmptyFlagArr)
 {
     // Block size in uint of datatype
     const uint32_t blockSize = BLOCK_SIZE / sizeof(T);
@@ -42,7 +44,7 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     // tell if all the data in this data chunk are zero
     __shared__ int notEmptyFlag;
 
-    if (threadIdx.x == 0 && blockIdx.x == 0)
+    if (threadIdx.x == 0)
     {
         notEmptyFlag = 0;
     }
@@ -64,6 +66,11 @@ __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagAr
     if (notEmptyFlag == 0)
     {
         return;
+    }
+
+    if (threadIdx.x == 0)
+    {
+        notEmptyFlagArr[blockIdx.x] = 1;
     }
 
     __shared__ uint8_t lengthBuffer[blockSize];
@@ -299,7 +306,7 @@ __global__ void compressKernelIII(uint32_t numOfBlocks, uint32_t *flagArrOffsetG
 
 // Define the decompress kernel functions
 template <typename T>
-__global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flagArrOffsetGlobal, uint32_t *compressedDataOffsetGlobal, uint8_t *flagArrGlobal, uint8_t *compressedDataGlobal)
+__global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flagArrOffsetGlobal, uint32_t *compressedDataOffsetGlobal, uint8_t *flagArrGlobal, uint8_t *compressedDataGlobal, uint8_t *notEmptyFlagArr)
 {
     // Block size in unit of datatype
     const uint32_t blockSize = BLOCK_SIZE / sizeof(T);
@@ -308,49 +315,52 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
 
     if (tid < numOfBlocks)
     {
-        int flagArrOffset = flagArrOffsetGlobal[tid];
-        int flagArrSize = flagArrOffsetGlobal[tid + 1] - flagArrOffsetGlobal[tid];
-
-        int compressedDataOffset = compressedDataOffsetGlobal[tid];
-
-        uint32_t dataPointsIndex = 0;
-        uint32_t compressedDataIndex = 0;
-
-        uint8_t byteFlag;
-
-        for (int flagArrayIndex = 0; flagArrayIndex < flagArrSize; flagArrayIndex++)
+        if (notEmptyFlagArr[tid] != 0)
         {
-            byteFlag = flagArrGlobal[flagArrOffset + flagArrayIndex];
+            int flagArrOffset = flagArrOffsetGlobal[tid];
+            int flagArrSize = flagArrOffsetGlobal[tid + 1] - flagArrOffsetGlobal[tid];
 
-            for (int bitCount = 0; bitCount < 8; bitCount++)
+            int compressedDataOffset = compressedDataOffsetGlobal[tid];
+
+            uint32_t dataPointsIndex = 0;
+            uint32_t compressedDataIndex = 0;
+
+            uint8_t byteFlag;
+
+            for (int flagArrayIndex = 0; flagArrayIndex < flagArrSize; flagArrayIndex++)
             {
-                int matchFlag = (byteFlag >> bitCount) & 0x1;
-                if (matchFlag == 1)
+                byteFlag = flagArrGlobal[flagArrOffset + flagArrayIndex];
+
+                for (int bitCount = 0; bitCount < 8; bitCount++)
                 {
-                    int length = compressedDataGlobal[compressedDataOffset + compressedDataIndex];
-                    int offset = compressedDataGlobal[compressedDataOffset + compressedDataIndex + 1];
-                    compressedDataIndex += 2;
-                    int dataPointsStart = dataPointsIndex;
-                    for (int tmpDecompIndex = 0; tmpDecompIndex < length; tmpDecompIndex++)
+                    int matchFlag = (byteFlag >> bitCount) & 0x1;
+                    if (matchFlag == 1)
                     {
-                        output[tid * blockSize + dataPointsIndex] = output[tid * blockSize + dataPointsStart - offset + tmpDecompIndex];
+                        int length = compressedDataGlobal[compressedDataOffset + compressedDataIndex];
+                        int offset = compressedDataGlobal[compressedDataOffset + compressedDataIndex + 1];
+                        compressedDataIndex += 2;
+                        int dataPointsStart = dataPointsIndex;
+                        for (int tmpDecompIndex = 0; tmpDecompIndex < length; tmpDecompIndex++)
+                        {
+                            output[tid * blockSize + dataPointsIndex] = output[tid * blockSize + dataPointsStart - offset + tmpDecompIndex];
+                            dataPointsIndex++;
+                        }
+                    }
+                    else
+                    {
+                        uint8_t *tmpPtr = (uint8_t *)&output[tid * blockSize + dataPointsIndex];
+                        for (int tmpDecompIndex = 0; tmpDecompIndex < sizeof(T); tmpDecompIndex++)
+                        {
+                            *(tmpPtr + tmpDecompIndex) = compressedDataGlobal[compressedDataOffset + compressedDataIndex + tmpDecompIndex];
+                        }
+
+                        compressedDataIndex += sizeof(T);
                         dataPointsIndex++;
                     }
-                }
-                else
-                {
-                    uint8_t *tmpPtr = (uint8_t *)&output[tid * blockSize + dataPointsIndex];
-                    for (int tmpDecompIndex = 0; tmpDecompIndex < sizeof(T); tmpDecompIndex++)
+                    if (dataPointsIndex >= blockSize)
                     {
-                        *(tmpPtr + tmpDecompIndex) = compressedDataGlobal[compressedDataOffset + compressedDataIndex + tmpDecompIndex];
+                        return;
                     }
-
-                    compressedDataIndex += sizeof(T);
-                    dataPointsIndex++;
-                }
-                if (dataPointsIndex >= blockSize)
-                {
-                    return;
                 }
             }
         }
@@ -371,6 +381,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     uint8_t *tmpCompressedDataGlobal;
     uint8_t *flagArrGlobal;
     uint8_t *compressedDataGlobal;
+    uint8_t *notEmptyFlagArr;
 
     // calculate the padding size, unit in bytes
     uint32_t paddingSize = fileSize % BLOCK_SIZE == 0 ? 0 : BLOCK_SIZE - fileSize % BLOCK_SIZE;
@@ -390,6 +401,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaMalloc((void **)&tmpCompressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize);
     cudaMalloc((void **)&flagArrGlobal, sizeof(uint8_t) * datatypeSize / 8);
     cudaMalloc((void **)&compressedDataGlobal, sizeof(INPUT_TYPE) * datatypeSize);
+    cudaMalloc((void **)&notEmptyFlagArr, sizeof(uint8_t) * numOfBlocks);
 
     // initialize the mem as 0
     // cudaMemsetAsync(deviceArray, 0, fileSize + paddingSize);
@@ -400,6 +412,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaMemsetAsync(compressedDataOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
     cudaMemsetAsync(tmpFlagArrGlobal, 0, sizeof(uint8_t) * datatypeSize / 8, stream);
     cudaMemsetAsync(tmpCompressedDataGlobal, 0, sizeof(INPUT_TYPE) * datatypeSize, stream);
+    cudaMemsetAsync(notEmptyFlagArr, 0, sizeof(uint8_t) * numOfBlocks, stream);
 
     dim3 gridDim(numOfBlocks);
     dim3 blockDim(THREAD_SIZE);
@@ -413,74 +426,15 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     int minEncodeLength = sizeof(INPUT_TYPE) == 1 ? 2 : 1;
 
     // launch kernels
-    compressKernelI<INPUT_TYPE><<<gridDim, blockDim, 0, stream>>>(deviceArray, numOfBlocks, flagArrSizeGlobal, compressedDataSizeGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, minEncodeLength);
+    compressKernelI<INPUT_TYPE><<<gridDim, blockDim, 0, stream>>>(deviceArray, numOfBlocks, flagArrSizeGlobal, compressedDataSizeGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, minEncodeLength, notEmptyFlagArr);
 
-    // Determine temporary device storage requirements
-    void *flag_d_temp_storage = NULL;
-    size_t flag_temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(flag_d_temp_storage, flag_temp_storage_bytes, flagArrSizeGlobal, flagArrOffsetGlobal, numOfBlocks + 1, stream = stream);
-
-    // Allocate temporary storage
-    cudaMalloc(&flag_d_temp_storage, flag_temp_storage_bytes);
-
-    // Run exclusive prefix sum
-    cub::DeviceScan::ExclusiveSum(flag_d_temp_storage, flag_temp_storage_bytes, flagArrSizeGlobal, flagArrOffsetGlobal, numOfBlocks + 1, stream = stream);
-
-    // Determine temporary device storage requirements
-    void *data_d_temp_storage = NULL;
-    size_t data_temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(data_d_temp_storage, data_temp_storage_bytes, compressedDataSizeGlobal, compressedDataOffsetGlobal, numOfBlocks + 1, stream = stream);
-
-    // Allocate temporary storage
-    cudaMalloc(&data_d_temp_storage, data_temp_storage_bytes);
-
-    // Run exclusive prefix sum
-    cub::DeviceScan::ExclusiveSum(data_d_temp_storage, data_temp_storage_bytes, compressedDataSizeGlobal, compressedDataOffsetGlobal, numOfBlocks + 1, stream = stream);
+    thrust::exclusive_scan(thrust::device.on(stream), flagArrSizeGlobal, flagArrSizeGlobal + numOfBlocks + 1, flagArrOffsetGlobal);
+    thrust::exclusive_scan(thrust::device.on(stream), compressedDataSizeGlobal, compressedDataSizeGlobal + numOfBlocks + 1, compressedDataOffsetGlobal);
 
     compressKernelIII<INPUT_TYPE><<<gridDim, blockDim, 0, stream>>>(numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, tmpFlagArrGlobal, tmpCompressedDataGlobal, flagArrGlobal, compressedDataGlobal);
 
     cudaEventRecord(compStop, stream);
-    // cudaEventRecord(decompStart);
 
-    // decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal);
-    // cudaEventRecord(decompStop);
-
-#ifdef DEBUG
-    printf("print the first 1024 flag array offset elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", flagArrOffsetGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    printf("print the first 1024 compressed data offset elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", compressedDataOffsetGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    printf("print the first 1024 flag array elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", flagArrGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    printf("print the first 1024 compressed data elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", compressedDataGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    // printf("print the first 1024 tmp flag array elements:\n");
-    // for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    // {
-    //   printf("%d\t", tmpFlagArrGlobalHost[tmpIndex]);
-    // }
-    // printf("\n");
-#endif
     cudaEventSynchronize(compStop);
 
     uint32_t *flagArrSize;
@@ -497,7 +451,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaStreamSynchronize(stream);
 
     uint32_t originalSize = fileSize;
-    uint32_t compressedSize = sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t);
+    uint32_t compressedSize = sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + numOfBlocks * sizeof(uint8_t) + 4 * sizeof(uint32_t);
     float compressionRatio = float(originalSize) / float(compressedSize);
     std::cout << "the original size: " << originalSize << std::endl;
     std::cout << "the compressed size: " << compressedSize << std::endl;
@@ -505,24 +459,16 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
 
     uint8_t *outputPtr;
     // outputPtr = (uint8_t *)malloc(sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t));
-    cudaMallocHost(&outputPtr, sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t));
+    cudaMallocHost(&outputPtr, sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + numOfBlocks * sizeof(uint8_t) + 4 * sizeof(uint32_t));
 
     uint32_t outputPtrOffset = 0;
     *(uint32_t *)(outputPtr + outputPtrOffset) = fileSize;
-    // std::cout << fileSize<< std::endl;
-    // std::cout << *(uint32_t *)(outputPtr + outputPtrOffset) << std::endl;
     outputPtrOffset += sizeof(uint32_t);
     *(uint32_t *)(outputPtr + outputPtrOffset) = numOfBlocks;
-    // std::cout << numOfBlocks<< std::endl;
-    // std::cout << *(uint32_t *)(outputPtr + outputPtrOffset) << std::endl;
     outputPtrOffset += sizeof(uint32_t);
     *(uint32_t *)(outputPtr + outputPtrOffset) = *flagArrSize;
-    // std::cout << *flagArrSize<< std::endl;
-    // std::cout << *(uint32_t *)(outputPtr + outputPtrOffset) << std::endl;
     outputPtrOffset += sizeof(uint32_t);
     *(uint32_t *)(outputPtr + outputPtrOffset) = *compressedDateSize;
-    // std::cout << *compressedDateSize<< std::endl;
-    // std::cout << *(uint32_t *)(outputPtr + outputPtrOffset) << std::endl;
     outputPtrOffset += sizeof(uint32_t);
 
     cudaMemcpyAsync(outputPtr + outputPtrOffset, flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyDeviceToHost, stream);
@@ -533,24 +479,17 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     outputPtrOffset += *flagArrSize;
     cudaMemcpyAsync(outputPtr + outputPtrOffset, compressedDataGlobal, *compressedDateSize, cudaMemcpyDeviceToHost, stream);
     outputPtrOffset += *compressedDateSize;
-
-    // std::cout << "the allocated size is: " << sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 3 * sizeof(uint32_t) << std::endl;
-    // std::cout << "the actual size is: " << outputPtrOffset << std::endl;
+    cudaMemcpyAsync(outputPtr + outputPtrOffset, notEmptyFlagArr, sizeof(uint8_t) * numOfBlocks, cudaMemcpyDeviceToHost, stream);
+    outputPtrOffset += sizeof(uint8_t) * numOfBlocks;
 
     cudaStreamSynchronize(stream);
 
     io::write_array_to_binary<uint8_t>(compressedFileName, outputPtr, outputPtrOffset);
 
     float compTime = 0;
-    // float decompTime = 0;
     cudaEventElapsedTime(&compTime, compStart, compStop);
-    // cudaEventElapsedTime(&decompTime, decompStart, decompStop);
     float compTp = float(fileSize) / 1024 / 1024 / compTime;
-    // float decompTp = float(fileSize) / 1024 / 1024 / decompTime;
     std::cout << "compression e2e throughput: " << compTp << " GB/s" << std::endl;
-    // std::cout << "decompression e2e throughput: " << decompTp << " GB/s" << std::endl;
-
-    // cudaFree(deviceOutput);
 
     cudaFree(flagArrSizeGlobal);
     cudaFree(flagArrOffsetGlobal);
@@ -560,9 +499,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaFree(tmpCompressedDataGlobal);
     cudaFree(flagArrGlobal);
     cudaFree(compressedDataGlobal);
-
-    cudaFree(flag_d_temp_storage);
-    cudaFree(data_d_temp_storage);
+    cudaFree(notEmptyFlagArr);
 
     cudaFree(flagArrSize);
     cudaFree(compressedDateSize);
@@ -600,11 +537,13 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
     uint32_t *compressedDataOffsetGlobal;
     uint8_t *flagArrGlobal;
     uint8_t *compressedDataGlobal;
+    uint8_t *notEmptyFlagArr;
 
     cudaMalloc((void **)&flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMalloc((void **)&compressedDataOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMalloc((void **)&flagArrGlobal, sizeof(uint8_t) * flagArrSize);
     cudaMalloc((void **)&compressedDataGlobal, sizeof(INPUT_TYPE) * compressedDateSize);
+    cudaMalloc((void **)&notEmptyFlagArr, sizeof(uint8_t) * numOfBlocks);
 
     cudaMemcpyAsync(flagArrOffsetGlobal, inputPtr + inputPtrOffset, sizeof(uint32_t) * (numOfBlocks + 1), cudaMemcpyHostToDevice, stream);
     inputPtrOffset += sizeof(uint32_t) * (numOfBlocks + 1);
@@ -612,8 +551,10 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
     inputPtrOffset += sizeof(uint32_t) * (numOfBlocks + 1);
     cudaMemcpyAsync(flagArrGlobal, inputPtr + inputPtrOffset, sizeof(uint8_t) * flagArrSize, cudaMemcpyHostToDevice, stream);
     inputPtrOffset += flagArrSize;
-    cudaMemcpyAsync(compressedDataGlobal, inputPtr + inputPtrOffset, sizeof(INPUT_TYPE) * compressedDateSize, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(compressedDataGlobal, inputPtr + inputPtrOffset, compressedDateSize, cudaMemcpyHostToDevice, stream);
     inputPtrOffset += compressedDateSize;
+    cudaMemcpyAsync(notEmptyFlagArr, inputPtr + inputPtrOffset, sizeof(uint8_t) * numOfBlocks, cudaMemcpyHostToDevice, stream);
+    inputPtrOffset += sizeof(uint8_t) * numOfBlocks;
 
     dim3 deGridDim(ceil(float(numOfBlocks) / 32));
     dim3 deBlockDim(32);
@@ -623,7 +564,7 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
     cudaEventCreate(&decompStop);
 
     cudaEventRecord(decompStart, stream);
-    decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim, 0, stream>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal);
+    decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim, 0, stream>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal, notEmptyFlagArr);
     cudaEventRecord(decompStop, stream);
 
 #ifdef DEBUG
@@ -693,6 +634,7 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
     cudaFree(compressedDataOffsetGlobal);
     cudaFree(flagArrGlobal);
     cudaFree(compressedDataGlobal);
+    cudaFree(notEmptyFlagArr);
 
     cudaFree(inputPtr);
 
