@@ -15,7 +15,6 @@
 #define THREAD_SIZE 128     // in unit of datatype, the size of the thread block, so as the size of symbols per iteration
 #define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
 #define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
-// #define DEBUG
 
 // Define the compress match kernel functions
 template <typename T>
@@ -390,9 +389,6 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     uint32_t datatypeSize = static_cast<uint32_t>((fileSize + paddingSize) / sizeof(INPUT_TYPE));
     uint32_t numOfBlocks = datatypeSize * sizeof(INPUT_TYPE) / BLOCK_SIZE;
 
-    // malloc the device buffer and set it as 0
-    // cudaMalloc((void **)&deviceOutput, fileSize + paddingSize);
-
     cudaMalloc((void **)&flagArrSizeGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMalloc((void **)&flagArrOffsetGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
     cudaMalloc((void **)&compressedDataSizeGlobal, sizeof(uint32_t) * (numOfBlocks + 1));
@@ -404,8 +400,6 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     cudaMalloc((void **)&notEmptyFlagArr, sizeof(uint8_t) * numOfBlocks);
 
     // initialize the mem as 0
-    // cudaMemsetAsync(deviceArray, 0, fileSize + paddingSize);
-    // cudaMemsetAsync(deviceOutput, 0, fileSize + paddingSize);
     cudaMemsetAsync(flagArrSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
     cudaMemsetAsync(flagArrOffsetGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
     cudaMemsetAsync(compressedDataSizeGlobal, 0, sizeof(uint32_t) * (numOfBlocks + 1), stream);
@@ -440,9 +434,7 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     uint32_t *flagArrSize;
     uint32_t *compressedDateSize;
 
-    // flagArrSize = (uint32_t *)malloc(sizeof(uint32_t));
     cudaMallocHost(&flagArrSize, sizeof(uint32_t));
-    // compressedDateSize = (uint32_t *)malloc(sizeof(uint32_t));
     cudaMallocHost(&compressedDateSize, sizeof(uint32_t));
 
     cudaMemcpyAsync(flagArrSize, flagArrOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
@@ -458,7 +450,6 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
     std::cout << "compression ratio: " << compressionRatio << std::endl;
 
     uint8_t *outputPtr;
-    // outputPtr = (uint8_t *)malloc(sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + 4 * sizeof(uint32_t));
     cudaMallocHost(&outputPtr, sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize + numOfBlocks * sizeof(uint8_t) + 4 * sizeof(uint32_t));
 
     uint32_t outputPtrOffset = 0;
@@ -514,7 +505,6 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
 
     size_t compressedFileSize = io::FileSize(compressedFileName);
     uint8_t *inputPtr;
-    // inputPtr = (uint8_t *)malloc(compressedFileSize);
     cudaMallocHost(&inputPtr, compressedFileSize);
     io::read_binary_to_array<uint8_t>(compressedFileName, inputPtr, compressedFileSize);
 
@@ -567,67 +557,11 @@ int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *s
     decompressKernel<INPUT_TYPE><<<deGridDim, deBlockDim, 0, stream>>>(deviceOutput, numOfBlocks, flagArrOffsetGlobal, compressedDataOffsetGlobal, flagArrGlobal, compressedDataGlobal, notEmptyFlagArr);
     cudaEventRecord(decompStop, stream);
 
-#ifdef DEBUG
-    printf("print the first 1024 flag array offset elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", flagArrOffsetGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    printf("print the first 1024 compressed data offset elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", compressedDataOffsetGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    printf("print the first 1024 flag array elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", flagArrGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    printf("print the first 1024 compressed data elements:\n");
-    for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    {
-        printf("%d\t", compressedDataGlobalHost[tmpIndex]);
-    }
-    printf("\n");
-
-    // printf("print the first 1024 tmp flag array elements:\n");
-    // for (int tmpIndex = 0; tmpIndex < 1024; tmpIndex++)
-    // {
-    //   printf("%d\t", tmpFlagArrGlobalHost[tmpIndex]);
-    // }
-    // printf("\n");
-#endif
     cudaEventSynchronize(decompStop);
 
-    // uint32_t *flagArrSize;
-    // uint32_t *compressedDateSize;
-
-    // flagArrSize = (uint32_t *)malloc(sizeof(uint32_t));
-    // compressedDateSize = (uint32_t *)malloc(sizeof(uint32_t));
-
-    // cudaMemcpy(flagArrSize, flagArrOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-    // cudaMemcpy(compressedDateSize, compressedDataOffsetGlobal + numOfBlocks, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-
-    // uint32_t originalSize = fileSize;
-    // uint32_t compressedSize = sizeof(uint32_t) * (numOfBlocks + 1) * 2 + *flagArrSize + *compressedDateSize;
-    // float compressionRatio = float(originalSize) / float(compressedSize);
-    // std::cout << "the original size: " << originalSize << std::endl;
-    // std::cout << "the compressed size: " << compressedSize << std::endl;
-    // std::cout << "compression ratio: " << compressionRatio << std::endl;
-
-    // float compTime = 0;
     float decompTime = 0;
-    // cudaEventElapsedTime(&compTime, compStart, compStop);
     cudaEventElapsedTime(&decompTime, decompStart, decompStop);
-    // float compTp = float(fileSize) / 1024 / 1024 / compTime;
     float decompTp = float(fileSize) / 1024 / 1024 / decompTime;
-    // std::cout << "compression e2e throughput: " << compTp << " GB/s" << std::endl;
     std::cout << "decompression e2e throughput: " << decompTp << " GB/s" << std::endl;
 
     cudaFree(flagArrOffsetGlobal);
