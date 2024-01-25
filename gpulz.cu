@@ -16,6 +16,8 @@
 #define WINDOW_SIZE 32      // in unit of datatype, maximum 255, the size of the sliding window, so as the maximum match length
 #define INPUT_TYPE uint32_t // define input type, since c++ doesn't support runtime data type defination
 
+#define GDS_SWITCH
+
 // Define the compress match kernel functions
 template <typename T>
 __global__ void compressKernelI(T *input, uint32_t numOfBlocks, uint32_t *flagArrSizeGlobal, uint32_t *compressedDataSizeGlobal, uint8_t *tmpFlagArrGlobal, uint8_t *tmpCompressedDataGlobal, int minEncodeLength, uint8_t *notEmptyFlagArr)
@@ -369,6 +371,7 @@ __global__ void decompressKernel(T *output, uint32_t numOfBlocks, uint32_t *flag
 int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedFileName, void *streamPtr)
 {
     // INPUT_TYPE *deviceOutput;
+    cudaDeviceSynchronize();
 
     cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
 
@@ -475,7 +478,11 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
 
     cudaStreamSynchronize(stream);
 
+#ifndef GDS_SWITCH
     io::write_array_to_binary<uint8_t>(compressedFileName, outputPtr, outputPtrOffset);
+#else
+    io::cufileWrite(compressedFileName.c_str(), outputPtr, outputPtrOffset);
+#endif
 
     float compTime = 0;
     cudaEventElapsedTime(&compTime, compStart, compStop);
@@ -501,12 +508,18 @@ int compress(INPUT_TYPE *deviceArray, uint32_t fileSize, std::string compressedF
 
 int decompress(INPUT_TYPE *deviceOutput, std::string compressedFileName, void *streamPtr)
 {
+    cudaDeviceSynchronize();
     cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
 
     size_t compressedFileSize = io::FileSize(compressedFileName);
     uint8_t *inputPtr;
     cudaMallocHost(&inputPtr, compressedFileSize);
+
+#ifndef GDS_SWITCH
     io::read_binary_to_array<uint8_t>(compressedFileName, inputPtr, compressedFileSize);
+#else
+    io::cufileRead(compressedFileName.c_str(), inputPtr, compressedFileSize);
+#endif
 
     uint32_t numOfBlocks = 0;
     uint32_t flagArrSize = 0;
