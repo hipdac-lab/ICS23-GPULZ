@@ -3,6 +3,7 @@ import torch
 import ctypes
 from ctypes import *
 from random import random
+from math import floor
 
 # compression and decompression round trip
 def compressFunc():
