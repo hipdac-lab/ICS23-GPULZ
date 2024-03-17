@@ -41,7 +41,7 @@ Please use the below command to run ```gpulz``` on a float32 data.
 
 For example,
 ```
-./gpulz -i ./tpch/tpch@0.2-00.bin
+./gpulz -i ./02_HURR_zyx_100x500x500=25000000/QCLOUDf48.bin.f32.errctrl.1e-3
 ```
 
 Finally, you can observe the output including compression ratio and compression/decompression end-to-end throughputs.
@@ -53,7 +53,7 @@ decompression e2e throughput: 34.4679 GB/s
 
 To obtain more accurate timing for the compression kernel, please use ```nsys``` before the execution command, like
 ```
-nsys profile --stats=true ./gpulz -i ./tpch/tpch@0.2-00.bin
+nsys profile --stats=true ./gpulz -i ./02_HURR_zyx_100x500x500=25000000/QCLOUDf48.bin.f32.errctrl.1e-3
 ```
 
 You will observe the time for each kernel, i.e., compressKernelI (compression kernel I), compressKernelIII (compression kernel III), cub::DeviceScanKernel (CUB prefix sum kernel), and decompressKernel (decompression kernel).
